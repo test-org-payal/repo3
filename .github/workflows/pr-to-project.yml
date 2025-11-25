@@ -9,16 +9,25 @@ on:
       - master
 
 jobs:
-  add-to-project:
+  add-to-project-and-merge:
     runs-on: ubuntu-latest
     steps:
-      - name: Add PR to Project
+      - name: Add PR to Project and Check Merge Conditions
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.TOKEN }}
           script: |
             const pr = context.payload.pull_request;
             
+            if (!pr) {
+              console.log('No PR context found');
+              return;
+            }
+            
+            console.log(`Processing PR #${pr.number}: ${pr.title}`);
+            
+            // Step 1: Add PR to Project
+            console.log('\n--- Step 1: Adding PR to Project ---');
             const projectData = await github.graphql(`
               query($org: String!, $number: Int!) {
                 organization(login: $org) {
@@ -50,6 +59,146 @@ jobs:
               if (e.message.includes('already exists')) {
                 console.log('ℹ️ PR already in project');
               } else {
-                console.error('❌ Error:', e.message);
+                console.error('❌ Error adding to project:', e.message);
               }
+            }
+            
+            // Step 2: Check Merge Conditions
+            console.log('\n--- Step 2: Checking Merge Conditions ---');
+            
+            const body = pr.body || '';
+            const requiredFailed = [];
+            const optionalStatus = [];
+            
+            // REQUIRED CHECK 1: Release notes filled
+            const releaseMatch = body.match(/## Release Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
+            const releaseNotes = releaseMatch ? releaseMatch[1].trim() : '';
+            const hasReleaseNotes = releaseNotes && !releaseNotes.startsWith('<!--') && releaseNotes.length > 5;
+            
+            if (!hasReleaseNotes) {
+              requiredFailed.push('❌ Release notes not added (REQUIRED)');
+            } else {
+              console.log('✅ Release notes added');
+            }
+            
+            // REQUIRED CHECK 2: Deployment notes filled
+            const deployMatch = body.match(/## Deployment Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
+            const deployNotes = deployMatch ? deployMatch[1].trim() : '';
+            const hasDeployNotes = deployNotes && !deployNotes.startsWith('<!--') && deployNotes.length > 5;
+            
+            if (!hasDeployNotes) {
+              requiredFailed.push('❌ Deployment notes not added (REQUIRED)');
+            } else {
+              console.log('✅ Deployment notes added');
+            }
+            
+            // OPTIONAL CHECK: Dependencies
+            const dependencyMatch = body.match(/## Dependencies\s*\n+([\s\S]*?)(?=\n##|$)/i);
+            const dependencies = dependencyMatch ? dependencyMatch[1].trim() : '';
+            const hasDependencies = dependencies && !dependencies.startsWith('<!--') && dependencies.length > 5;
+            
+            if (hasDependencies) {
+              optionalStatus.push('✅ Dependencies documented');
+              console.log('✅ Dependencies documented (optional)');
+            } else {
+              optionalStatus.push('ℹ️ Dependencies not documented (optional)');
+              console.log('ℹ️ Dependencies not documented (optional - not required)');
+            }
+            
+            // Step 3: Decide on merge
+            console.log('\n--- Step 3: Merge Decision ---');
+            
+            if (requiredFailed.length > 0) {
+              console.log('❌ Cannot merge - required checks incomplete:');
+              requiredFailed.forEach(f => console.log(`   ${f}`));
+              
+              const commentBody = `## ⏳ Merge Checklist
+
+**Required (must complete):**
+${requiredFailed.join('\n')}
+
+**Optional:**
+${optionalStatus.join('\n')}
+
+Please complete all required items before this PR can be merged.`;
+              
+              // Add/Update comment
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number
+              });
+              
+              const botComment = comments.data.find(c => 
+                c.user.type === 'Bot' && c.body.includes('Merge Checklist')
+              );
+              
+              if (botComment) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: botComment.id,
+                  body: commentBody
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body: commentBody
+                });
+              }
+              
+              return;
+            }
+            
+            // All required checks passed - merge!
+            console.log('✅ All required checks passed - merging PR');
+            
+            try {
+              const commitMessage = [
+                `Release Notes:\n${releaseNotes}`,
+                `\nDeployment Notes:\n${deployNotes}`
+              ];
+              
+              if (hasDependencies) {
+                commitMessage.push(`\nDependencies:\n${dependencies}`);
+              }
+              
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                merge_method: 'squash',
+                commit_title: `${pr.title} (#${pr.number})`,
+                commit_message: commitMessage.join('')
+              });
+              
+              console.log('✅ PR merged successfully!');
+              
+              const successMessage = `## ✅ Auto-Merged!
+
+All required checks passed. PR has been automatically merged.
+
+**Included in merge:**
+- ✅ Release notes
+- ✅ Deployment notes
+${hasDependencies ? '- ✅ Dependencies' : ''}`;
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: successMessage
+              });
+              
+            } catch (e) {
+              console.error('❌ Error merging PR:', e.message);
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: `❌ Auto-merge failed: ${e.message}`
+              });
             }
