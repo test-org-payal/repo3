@@ -99,11 +99,11 @@ jobs:
             
             console.log('\\n--- Extracting Content ---');
             const body = pr.body || '';
-            const releaseMatch = body.match(/## Release Notes\\s*\\n+([\\s\\S]*?)(?=\\n##|$)/i);
+            const releaseMatch = body.match(/## Release Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
             const releaseNotes = releaseMatch ? releaseMatch[1].trim() : '';
-            const deployMatch = body.match(/## Deployment Notes\\s*\\n+([\\s\\S]*?)(?=\\n##|$)/i);
+            const deployMatch = body.match(/## Deployment Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
             const deployNotes = deployMatch ? deployMatch[1].trim() : '';
-            const dependencyMatch = body.match(/## Dependencies\\s*\\n+([\\s\\S]*?)(?=\\n##|$)/i);
+            const dependencyMatch = body.match(/## Dependencies\s*\n+([\s\S]*?)(?=\n##|$)/i);
             const dependencies = dependencyMatch ? dependencyMatch[1].trim() : '';
             const mergeStatus = pr.merged ? 'Merged' : 'Not Merged';
             
@@ -172,7 +172,7 @@ jobs:
               const missing = [];
               if (!hasRelease) missing.push('❌ Release notes');
               if (!hasDeploy) missing.push('❌ Deployment notes');
-              const commentBody = '## ⏳ Merge Checklist\\n\\n**Required:**\\n' + missing.join('\\n');
+              const commentBody = '## ⏳ Merge Checklist\n\n**Required:**\n' + missing.join('\n');
               const comments = await github.rest.issues.listComments({
                 owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number
               });
@@ -191,8 +191,8 @@ jobs:
             
             console.log('\\n--- Merging ---');
             try {
-              let msg = 'Release Notes:\\n' + releaseNotes + '\\n\\nDeployment Notes:\\n' + deployNotes;
-              if (dependencies) msg += '\\n\\nDependencies:\\n' + dependencies;
+              let msg = 'Release Notes:\n' + releaseNotes + '\n\nDeployment Notes:\n' + deployNotes;
+              if (dependencies) msg += '\n\nDependencies:\n' + dependencies;
               await github.rest.pulls.merge({
                 owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number,
                 merge_method: 'squash', commit_title: pr.title + ' (#' + pr.number + ')', commit_message: msg
@@ -200,7 +200,7 @@ jobs:
               console.log('✅ Merged!');
               await github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number,
-                body: '## ✅ Auto-Merged!\\n\\nAll checks passed.'
+                body: '## ✅ Auto-Merged!\n\nAll checks passed.'
               });
             } catch (e) {
               console.error('❌ Merge failed: ' + e.message);
