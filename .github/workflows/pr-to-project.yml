@@ -3,25 +3,26 @@ name: Add PR to Project and Auto-Merge
 on:
   workflow_dispatch:
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, edited, reopened, synchronize, closed]
     branches:
       - main
       - master
 
 jobs:
-  add-to-project-and-merge:
+  manage-pr:
     runs-on: ubuntu-latest
     steps:
-      - name: Add PR to Project and Check Merge Conditions
+      - name: Manage PR in Project
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.TOKEN }}
           script: |
             const pr = context.payload.pull_request;
             if (!pr) { console.log('No PR context'); return; }
-            console.log('Processing PR #' + pr.number + ': ' + pr.title);
             
-            console.log('\n--- Adding to Project ---');
+            const action = context.payload.action;
+            console.log('Action: ' + action);
+            console.log('Processing PR #' + pr.number + ': ' + pr.title);
             
             // Get project and its fields
             const projectData = await github.graphql(`
@@ -34,6 +35,14 @@ jobs:
                         ... on ProjectV2Field {
                           id
                           name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
                         }
                       }
                     }
@@ -48,43 +57,73 @@ jobs:
             const releaseNotesField = fields.find(f => f.name === 'Release Notes');
             const deployNotesField = fields.find(f => f.name === 'Deployment Notes');
             const dependenciesField = fields.find(f => f.name === 'Dependencies');
+            const mergeStatusField = fields.find(f => f.name === 'Merge Status');
             
-            let itemId = null;
-            
-            try {
-              const addResult = await github.graphql(`mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
-                  item { id }
-                }
-              }`, { projectId: projectId, contentId: pr.node_id });
-              itemId = addResult.addProjectV2ItemById.item.id;
-              console.log('✅ PR added to project');
-            } catch (e) {
-              if (e.message.includes('already')) {
-                console.log('ℹ️ Already in project');
-                // Find existing item
-                const findQuery = await github.graphql(`
-                  query($projectId: ID!) {
-                    node(id: $projectId) {
-                      ... on ProjectV2 {
-                        items(first: 100) {
-                          nodes {
-                            id
-                            content {
-                              ... on PullRequest {
-                                number
-                                repository { name }
-                              }
+            // Find existing item in project
+            const findExistingItem = async () => {
+              const findQuery = await github.graphql(`
+                query($projectId: ID!) {
+                  node(id: $projectId) {
+                    ... on ProjectV2 {
+                      items(first: 100) {
+                        nodes {
+                          id
+                          content {
+                            ... on PullRequest {
+                              number
+                              repository { name }
                             }
                           }
                         }
                       }
                     }
-                  }`, { projectId });
-                const existingItem = findQuery.node.items.nodes.find(
-                  item => item.content?.number === pr.number && 
-                          item.content?.repository?.name === context.repo.repo
-                );
+                  }
+                }`, { projectId });
+              return findQuery.node.items.nodes.find(
+                item => item.content?.number === pr.number && 
+                        item.content?.repository?.name === context.repo.repo
+              );
+            };
+            
+            // Handle PR deletion/closure
+            if (action === 'closed') {
+              console.log('\n--- PR Closed/Merged - Removing from Project ---');
+              const existingItem = await findExistingItem();
+              if (existingItem) {
+                try {
+                  await github.graphql(`
+                    mutation($projectId: ID!, $itemId: ID!) {
+                      deleteProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
+                        deletedItemId
+                      }
+                    }`, { projectId: projectId, itemId: existingItem.id });
+                  console.log('✅ PR removed from project');
+                } catch (e) {
+                  console.error('❌ Error removing PR:', e.message);
+                }
+              } else {
+                console.log('PR not found in project');
+              }
+              return;
+            }
+            
+            // Add or get PR in project
+            console.log('\n--- Adding/Updating PR in Project ---');
+            let itemId = null;
+            
+            try {
+              const addResult = await github.graphql(`
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                    item { id }
+                  }
+                }`, { projectId: projectId, contentId: pr.node_id });
+              itemId = addResult.addProjectV2ItemById.item.id;
+              console.log('✅ PR added to project');
+            } catch (e) {
+              if (e.message.includes('already')) {
+                console.log('ℹ️ Already in project');
+                const existingItem = await findExistingItem();
                 if (existingItem) itemId = existingItem.id;
               } else {
                 console.error('❌ Error:', e.message);
@@ -102,9 +141,16 @@ jobs:
             const dependencyMatch = body.match(/## Dependencies\s*\n+([\s\S]*?)(?=\n##|$)/i);
             const dependencies = dependencyMatch ? dependencyMatch[1].trim() : '';
             
+            // Determine merge status based on PR state
+            const hasReleaseNotes = releaseNotes && !releaseNotes.startsWith('<!--') && releaseNotes.length > 0;
+            const hasDeployNotes = deployNotes && !deployNotes.startsWith('<!--') && deployNotes.length > 0;
+            const hasDependencies = dependencies && !dependencies.startsWith('<!--') && dependencies.length > 0;
+            
+            let mergeStatus = pr.merged ? 'Merged' : 'Not Merged';
+            
             // Update project fields
             if (itemId) {
-              const updateField = async (fieldId, value) => {
+              const updateTextField = async (fieldId, value) => {
                 if (!fieldId || !value) return;
                 try {
                   await github.graphql(`
@@ -124,30 +170,61 @@ jobs:
                       value: value.substring(0, 1024)
                     });
                 } catch (e) {
-                  console.log('Warning: Could not update field -', e.message);
+                  console.log('Warning: Could not update text field -', e.message);
                 }
               };
               
-              if (releaseNotes) await updateField(releaseNotesField?.id, releaseNotes);
-              if (deployNotes) await updateField(deployNotesField?.id, deployNotes);
-              if (dependencies) await updateField(dependenciesField?.id, dependencies);
+              const updateSelectField = async (fieldId, optionName) => {
+                if (!fieldId || !optionName) return;
+                try {
+                  const field = fields.find(f => f.id === fieldId);
+                  const option = field?.options?.find(o => o.name === optionName);
+                  if (!option) {
+                    console.log('Option not found:', optionName);
+                    return;
+                  }
+                  
+                  await github.graphql(`
+                    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                      updateProjectV2ItemFieldValue(input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: { singleSelectOptionId: $optionId }
+                      }) {
+                        projectV2Item { id }
+                      }
+                    }`, {
+                      projectId: projectId,
+                      itemId: itemId,
+                      fieldId: fieldId,
+                      optionId: option.id
+                    });
+                } catch (e) {
+                  console.log('Warning: Could not update select field -', e.message);
+                }
+              };
+              
+              if (releaseNotes) await updateTextField(releaseNotesField?.id, releaseNotes);
+              if (deployNotes) await updateTextField(deployNotesField?.id, deployNotes);
+              if (dependencies) await updateTextField(dependenciesField?.id, dependencies);
+              await updateSelectField(mergeStatusField?.id, mergeStatus);
               
               console.log('✅ Project fields updated');
+              console.log('   Merge Status: ' + mergeStatus);
             }
             
-            console.log('\n--- Checking Conditions ---');
+            // Check if ready to merge
+            console.log('\n--- Checking Merge Conditions ---');
             const requiredFailed = [];
             const optionalStatus = [];
             
-            const hasReleaseNotes = releaseNotes && !releaseNotes.startsWith('<!--') && releaseNotes.length > 0;
             if (!hasReleaseNotes) requiredFailed.push('❌ Release notes not added (REQUIRED)');
             else console.log('✅ Release notes added');
             
-            const hasDeployNotes = deployNotes && !deployNotes.startsWith('<!--') && deployNotes.length > 0;
             if (!hasDeployNotes) requiredFailed.push('❌ Deployment notes not added (REQUIRED)');
             else console.log('✅ Deployment notes added');
             
-            const hasDependencies = dependencies && !dependencies.startsWith('<!--') && dependencies.length > 0;
             if (hasDependencies) {
               optionalStatus.push('✅ Dependencies documented');
               console.log('✅ Dependencies (optional)');
@@ -194,6 +271,11 @@ jobs:
                 commit_message: commitMessage
               });
               console.log('✅ Merged!');
+              
+              // Update status to "Merged" after successful merge
+              if (itemId && mergeStatusField) {
+                await updateSelectField(mergeStatusField.id, 'Merged');
+              }
               
               const successBody = '## ✅ Auto-Merged!\n\nAll required checks passed.\n\n**Included:**\n- ✅ Release notes\n- ✅ Deployment notes' + (hasDependencies ? '\n- ✅ Dependencies' : '');
               
