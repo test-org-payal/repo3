@@ -2,7 +2,7 @@ name: Add PR to Project and Auto-Merge
 
 on:
   pull_request:
-    types: [opened, edited, reopened, synchronize, closed]
+    types: [opened, edited, reopened, closed]
     branches:
       - main
       - master
@@ -28,53 +28,6 @@ jobs:
             
             const org = 'test-org-payal';
             const projectNumber = 2;
-            
-            // Handle PR closure - remove from project
-            if (action === 'closed') {
-              console.log('\n--- PR Closed - Removing from Project ---');
-              try {
-                const findQuery = await github.graphql(`
-                  query($org: String!, $projectNumber: Int!) {
-                    organization(login: $org) {
-                      projectV2(number: $projectNumber) {
-                        id
-                        items(first: 100) {
-                          nodes {
-                            id
-                            content {
-                              ... on PullRequest {
-                                number
-                                repository { name }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }`, { org: org, projectNumber: projectNumber });
-                
-                const project = findQuery.organization.projectV2;
-                const existingItem = project.items.nodes.find(
-                  item => item.content?.number === pr.number && 
-                          item.content?.repository?.name === context.repo.repo
-                );
-                
-                if (existingItem) {
-                  await github.graphql(`
-                    mutation($projectId: ID!, $itemId: ID!) {
-                      deleteProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
-                        deletedItemId
-                      }
-                    }`, { projectId: project.id, itemId: existingItem.id });
-                  console.log('✅ PR removed from project');
-                } else {
-                  console.log('PR not found in project');
-                }
-              } catch (e) {
-                console.error('Error removing PR:', e.message);
-              }
-              return;
-            }
             
             // Get project info
             console.log('\n--- Getting Project Info ---');
