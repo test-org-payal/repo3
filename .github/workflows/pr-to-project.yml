@@ -3,7 +3,7 @@ name: Add PR to Project and Auto-Merge
 on:
   workflow_dispatch:
   pull_request:
-    types: [opened, edited, reopened, synchronize, closed]
+    types: [opened, edited, reopened, closed]
     branches:
       - main
       - master
@@ -57,7 +57,45 @@ jobs:
             const releaseNotesField = fields.find(f => f.name === 'Release Notes');
             const deployNotesField = fields.find(f => f.name === 'Deployment Notes');
             const dependenciesField = fields.find(f => f.name === 'Dependencies');
-            const mergeStatusField = fields.find(f => f.name === 'Merge Status');
+            let mergeStatusField = fields.find(f => f.name === 'Merge Status');
+            
+            // Create Merge Status field if it doesn't exist
+            if (!mergeStatusField) {
+              console.log('Creating Merge Status field...');
+              try {
+                const createFieldResult = await github.graphql(`
+                  mutation($projectId: ID!, $name: String!, $dataType: ProjectV2CustomFieldType!) {
+                    createProjectV2Field(input: {
+                      projectId: $projectId
+                      dataType: $dataType
+                      name: $name
+                      singleSelectOptions: [
+                        {name: "Not Merged", color: GRAY},
+                        {name: "Merged", color: GREEN}
+                      ]
+                    }) {
+                      projectV2Field {
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }`, {
+                    projectId: projectId,
+                    name: 'Merge Status',
+                    dataType: 'SINGLE_SELECT'
+                  });
+                mergeStatusField = createFieldResult.createProjectV2Field.projectV2Field;
+                console.log('✅ Merge Status field created');
+              } catch (e) {
+                console.log('⚠️ Could not create field:', e.message);
+              }
+            }
             
             // Find existing item in project
             const findExistingItem = async () => {
@@ -148,63 +186,64 @@ jobs:
             
             let mergeStatus = pr.merged ? 'Merged' : 'Not Merged';
             
+            // Define update functions
+            const updateTextField = async (fieldId, value) => {
+              if (!fieldId || !value) return;
+              try {
+                await github.graphql(`
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $projectId
+                      itemId: $itemId
+                      fieldId: $fieldId
+                      value: { text: $value }
+                    }) {
+                      projectV2Item { id }
+                    }
+                  }`, {
+                    projectId: projectId,
+                    itemId: itemId,
+                    fieldId: fieldId,
+                    value: value.substring(0, 1024)
+                  });
+              } catch (e) {
+                console.log('Warning: Could not update text field -', e.message);
+              }
+            };
+            
+            const updateSelectField = async (fieldId, optionName) => {
+              if (!fieldId || !optionName || !itemId) return;
+              try {
+                const field = fields.find(f => f.id === fieldId);
+                const option = field?.options?.find(o => o.name === optionName);
+                if (!option) {
+                  console.log('Option not found:', optionName);
+                  return;
+                }
+                
+                await github.graphql(`
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $projectId
+                      itemId: $itemId
+                      fieldId: $fieldId
+                      value: { singleSelectOptionId: $optionId }
+                    }) {
+                      projectV2Item { id }
+                    }
+                  }`, {
+                    projectId: projectId,
+                    itemId: itemId,
+                    fieldId: fieldId,
+                    optionId: option.id
+                  });
+              } catch (e) {
+                console.log('Warning: Could not update select field -', e.message);
+              }
+            };
+            
             // Update project fields
             if (itemId) {
-              const updateTextField = async (fieldId, value) => {
-                if (!fieldId || !value) return;
-                try {
-                  await github.graphql(`
-                    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
-                      updateProjectV2ItemFieldValue(input: {
-                        projectId: $projectId
-                        itemId: $itemId
-                        fieldId: $fieldId
-                        value: { text: $value }
-                      }) {
-                        projectV2Item { id }
-                      }
-                    }`, {
-                      projectId: projectId,
-                      itemId: itemId,
-                      fieldId: fieldId,
-                      value: value.substring(0, 1024)
-                    });
-                } catch (e) {
-                  console.log('Warning: Could not update text field -', e.message);
-                }
-              };
-              
-              const updateSelectField = async (fieldId, optionName) => {
-                if (!fieldId || !optionName) return;
-                try {
-                  const field = fields.find(f => f.id === fieldId);
-                  const option = field?.options?.find(o => o.name === optionName);
-                  if (!option) {
-                    console.log('Option not found:', optionName);
-                    return;
-                  }
-                  
-                  await github.graphql(`
-                    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-                      updateProjectV2ItemFieldValue(input: {
-                        projectId: $projectId
-                        itemId: $itemId
-                        fieldId: $fieldId
-                        value: { singleSelectOptionId: $optionId }
-                      }) {
-                        projectV2Item { id }
-                      }
-                    }`, {
-                      projectId: projectId,
-                      itemId: itemId,
-                      fieldId: fieldId,
-                      optionId: option.id
-                    });
-                } catch (e) {
-                  console.log('Warning: Could not update select field -', e.message);
-                }
-              };
-              
               if (releaseNotes) await updateTextField(releaseNotesField?.id, releaseNotes);
               if (deployNotes) await updateTextField(deployNotesField?.id, deployNotes);
               if (dependencies) await updateTextField(dependenciesField?.id, dependencies);
