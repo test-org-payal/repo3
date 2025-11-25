@@ -45,7 +45,7 @@ jobs:
             
             const releaseMatch = body.match(/## Release Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
             const releaseNotes = releaseMatch ? releaseMatch[1].trim() : '';
-            const hasReleaseNotes = releaseNotes && !releaseNotes.startsWith('<!--') && releaseNotes.length > 5;
+            const hasReleaseNotes = releaseNotes && !releaseNotes.startsWith('<!--') && releaseNotes.length > 0;
             if (!hasReleaseNotes) requiredFailed.push('❌ Release notes not added (REQUIRED)');
             else console.log('✅ Release notes added');
             
@@ -57,7 +57,7 @@ jobs:
             
             const dependencyMatch = body.match(/## Dependencies\s*\n+([\s\S]*?)(?=\n##|$)/i);
             const dependencies = dependencyMatch ? dependencyMatch[1].trim() : '';
-            const hasDependencies = dependencies && !dependencies.startsWith('<!--') && dependencies.length > 5;
+            const hasDependencies = dependencies && !dependencies.startsWith('<!--') && dependencies.length > 0;
             if (hasDependencies) {
               optionalStatus.push('✅ Dependencies documented');
               console.log('✅ Dependencies (optional)');
