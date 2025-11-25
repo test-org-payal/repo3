@@ -1,9 +1,8 @@
 name: Add PR to Project and Auto-Merge
 
 on:
-  workflow_dispatch:
   pull_request:
-    types: [opened, edited, reopened, closed]
+    types: [opened, edited, reopened, synchronize, closed]
     branches:
       - main
       - master
