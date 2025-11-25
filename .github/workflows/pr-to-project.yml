@@ -1,4 +1,4 @@
-name: Add PR to Project
+name: Add PR to Project and Auto-Merge
 
 on:
   workflow_dispatch:
@@ -22,41 +22,131 @@ jobs:
             console.log('Processing PR #' + pr.number + ': ' + pr.title);
             
             console.log('\n--- Adding to Project ---');
+            
+            // Get project and its fields
             const projectData = await github.graphql(`
               query($org: String!, $number: Int!) {
-                organization(login: $org) { projectV2(number: $number) { id } }
+                organization(login: $org) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
               }`, { org: 'test-org-payal', number: 2 });
+            
             const projectId = projectData.organization.projectV2.id;
+            const fields = projectData.organization.projectV2.fields.nodes;
+            
+            // Find field IDs
+            const releaseNotesField = fields.find(f => f.name === 'Release Notes');
+            const deployNotesField = fields.find(f => f.name === 'Deployment Notes');
+            const dependenciesField = fields.find(f => f.name === 'Dependencies');
+            
+            let itemId = null;
             
             try {
-              await github.graphql(`mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) { item { id } }
+              const addResult = await github.graphql(`mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                  item { id }
+                }
               }`, { projectId: projectId, contentId: pr.node_id });
+              itemId = addResult.addProjectV2ItemById.item.id;
               console.log('✅ PR added to project');
             } catch (e) {
-              if (e.message.includes('already')) console.log('ℹ️ Already in project');
-              else console.error('❌ Error:', e.message);
+              if (e.message.includes('already')) {
+                console.log('ℹ️ Already in project');
+                // Find existing item
+                const findQuery = await github.graphql(`
+                  query($projectId: ID!) {
+                    node(id: $projectId) {
+                      ... on ProjectV2 {
+                        items(first: 100) {
+                          nodes {
+                            id
+                            content {
+                              ... on PullRequest {
+                                number
+                                repository { name }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }`, { projectId });
+                const existingItem = findQuery.node.items.nodes.find(
+                  item => item.content?.number === pr.number && 
+                          item.content?.repository?.name === context.repo.repo
+                );
+                if (existingItem) itemId = existingItem.id;
+              } else {
+                console.error('❌ Error:', e.message);
+              }
+            }
+            
+            // Extract notes from PR body
+            const body = pr.body || '';
+            const releaseMatch = body.match(/## Release Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
+            const releaseNotes = releaseMatch ? releaseMatch[1].trim() : '';
+            
+            const deployMatch = body.match(/## Deployment Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
+            const deployNotes = deployMatch ? deployMatch[1].trim() : '';
+            
+            const dependencyMatch = body.match(/## Dependencies\s*\n+([\s\S]*?)(?=\n##|$)/i);
+            const dependencies = dependencyMatch ? dependencyMatch[1].trim() : '';
+            
+            // Update project fields
+            if (itemId) {
+              const updateField = async (fieldId, value) => {
+                if (!fieldId || !value) return;
+                try {
+                  await github.graphql(`
+                    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
+                      updateProjectV2ItemFieldValue(input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: { text: $value }
+                      }) {
+                        projectV2Item { id }
+                      }
+                    }`, {
+                      projectId: projectId,
+                      itemId: itemId,
+                      fieldId: fieldId,
+                      value: value.substring(0, 1024)
+                    });
+                } catch (e) {
+                  console.log('Warning: Could not update field -', e.message);
+                }
+              };
+              
+              if (releaseNotes) await updateField(releaseNotesField?.id, releaseNotes);
+              if (deployNotes) await updateField(deployNotesField?.id, deployNotes);
+              if (dependencies) await updateField(dependenciesField?.id, dependencies);
+              
+              console.log('✅ Project fields updated');
             }
             
             console.log('\n--- Checking Conditions ---');
-            const body = pr.body || '';
             const requiredFailed = [];
             const optionalStatus = [];
             
-            const releaseMatch = body.match(/## Release Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
-            const releaseNotes = releaseMatch ? releaseMatch[1].trim() : '';
             const hasReleaseNotes = releaseNotes && !releaseNotes.startsWith('<!--') && releaseNotes.length > 0;
             if (!hasReleaseNotes) requiredFailed.push('❌ Release notes not added (REQUIRED)');
             else console.log('✅ Release notes added');
             
-            const deployMatch = body.match(/## Deployment Notes\s*\n+([\s\S]*?)(?=\n##|$)/i);
-            const deployNotes = deployMatch ? deployMatch[1].trim() : '';
-            const hasDeployNotes = deployNotes && !deployNotes.startsWith('<!--') && deployNotes.length > 5;
+            const hasDeployNotes = deployNotes && !deployNotes.startsWith('<!--') && deployNotes.length > 0;
             if (!hasDeployNotes) requiredFailed.push('❌ Deployment notes not added (REQUIRED)');
             else console.log('✅ Deployment notes added');
             
-            const dependencyMatch = body.match(/## Dependencies\s*\n+([\s\S]*?)(?=\n##|$)/i);
-            const dependencies = dependencyMatch ? dependencyMatch[1].trim() : '';
             const hasDependencies = dependencies && !dependencies.startsWith('<!--') && dependencies.length > 0;
             if (hasDependencies) {
               optionalStatus.push('✅ Dependencies documented');
