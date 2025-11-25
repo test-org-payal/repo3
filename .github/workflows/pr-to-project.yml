@@ -2,7 +2,7 @@ name: Add PR to Project and Auto-Merge
 
 on:
   pull_request:
-    types: [opened, edited, reopened, closed]
+    types: [opened, edited, reopened, synchronize, closed]
     branches:
       - main
       - master
@@ -29,7 +29,6 @@ jobs:
             const org = 'test-org-payal';
             const projectNumber = 2;
             
-            // Get project info
             console.log('\n--- Getting Project Info ---');
             const projectQuery = await github.graphql(`
               query($org: String!, $projectNumber: Int!) {
@@ -63,13 +62,11 @@ jobs:
             console.log('Project ID: ' + projectId);
             console.log('Fields found: ' + fields.length);
             
-            // Find fields
             const releaseNotesField = fields.find(f => f.name === 'Release Notes');
             const deployNotesField = fields.find(f => f.name === 'Deployment Notes');
             const dependenciesField = fields.find(f => f.name === 'Dependencies');
             const mergeStatusField = fields.find(f => f.name === 'Merge Status');
             
-            // Add PR to project
             console.log('\n--- Adding PR to Project ---');
             let itemId = null;
             
@@ -86,7 +83,6 @@ jobs:
             } catch (e) {
               console.log('Error adding PR: ' + e.message);
               
-              // Try to find existing item
               const findQuery = await github.graphql(`
                 query($projectId: ID!) {
                   node(id: $projectId) {
@@ -120,7 +116,6 @@ jobs:
               }
             }
             
-            // Extract content from PR body
             console.log('\n--- Extracting PR Content ---');
             const body = pr.body || '';
             
@@ -137,14 +132,11 @@ jobs:
             console.log('Deployment Notes: ' + (deployNotes ? 'Found' : 'Empty'));
             console.log('Dependencies: ' + (dependencies ? 'Found' : 'Empty'));
             
-            // Determine merge status
             const mergeStatus = pr.merged ? 'Merged' : 'Not Merged';
             console.log('Merge Status: ' + mergeStatus);
             
-            // Update fields
             console.log('\n--- Updating Fields ---');
             
-            // Update text fields
             if (releaseNotes && releaseNotesField) {
               try {
                 await github.graphql(`
@@ -202,7 +194,6 @@ jobs:
               }
             }
             
-            // Update merge status
             if (mergeStatusField) {
               try {
                 const option = mergeStatusField.options?.find(o => o.name === mergeStatus);
@@ -227,7 +218,6 @@ jobs:
               }
             }
             
-            // Check merge conditions
             console.log('\n--- Checking Merge Conditions ---');
             const hasReleaseNotes = releaseNotes && !releaseNotes.startsWith('<!--') && releaseNotes.length > 0;
             const hasDeployNotes = deployNotes && !deployNotes.startsWith('<!--') && deployNotes.length > 0;
@@ -259,7 +249,6 @@ jobs:
               return;
             }
             
-            // Ready to merge
             console.log('\n--- Auto-Merging ---');
             try {
               let commitMessage = 'Release Notes:\n' + releaseNotes + '\n\nDeployment Notes:\n' + deployNotes;
